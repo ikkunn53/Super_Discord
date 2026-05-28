@@ -64,9 +64,12 @@ X（RSS）/ YouTube / Twitch の更新を監視し、設定した Discord チャ
 
 ### X（RSS）（X通知を使う場合）
 
-- 監視したい RSS フィード URL（ユーザー側で準備）
+- X（旧Twitter）通知用 RSS 作成ページ（推奨）  
+  https://rss.app/r/myfeeds
 
-> `x_rss` フィールドに有効な RSS URL を登録してください。
+> Twitter(X) は API 仕様上、リアルタイム連携を行うには有料プランが必要になる場合があります。  
+> 本 BOT では **RSS サービスの URL を利用して Discord に通知を送る方式**を採用しています。  
+> X 通知を登録する際は、上記サービスで作成した RSS URL を `x_rss` に登録してください。
 
 ---
 
