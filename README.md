@@ -40,7 +40,7 @@ X（RSS）/ YouTube / Twitch の更新を監視し、設定した Discord チャ
 - Discord 管理画面（サーバー/チャンネル確認）  
   https://discord.com/channels/@me
 
-> 必須値: `DISCORD_TOKEN`, `CONSOLE_CHANNEL_ID`（必要に応じて `LOG_CHANNEL_ID`）
+> 必須値: `DISCORD_TOKEN`, `CONSOLE_CHANNEL_ID`（必要に応じて `LOG_CHANNEL_ID`, `WEB_GUILD_ID`）
 
 ### Twitch（Twitch通知を使う場合に必須）
 
@@ -94,6 +94,8 @@ cp .env.example .env
 
 - `LOG_CHANNEL_ID`  
   BOT のログ送信用チャンネル ID（未設定なら Discord へのログ送信なし）
+- `WEB_GUILD_ID`  
+  Web 管理画面で通知先チャンネル一覧を読み込む Discord サーバー（Guild）ID。未設定の場合は `CONSOLE_CHANNEL_ID` が所属するサーバーから読み込みます。コンソール/ログ用サーバーと通知用サーバーを分ける場合は、通知用サーバーの ID を設定してください。
 - `WEB_PORT`  
   Web 管理画面のポート番号（例: `3000`）
 - `DB_PATH`  
