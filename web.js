@@ -252,12 +252,27 @@ export function startWeb({ client }) {
 </html>
 `;
 
-  async function guildChannels() {
-    if (!client?.isReady?.()) return [];
+  async function getWebGuild() {
+    if (!client?.isReady?.()) return null;
+
+    const configuredGuildId = (process.env.WEB_GUILD_ID || '').trim();
+    if (configuredGuildId) {
+      return client.guilds.fetch(configuredGuildId).catch(() => null);
+    }
+
     const c = await client.channels.fetch(process.env.CONSOLE_CHANNEL_ID).catch(() => null);
-    if (!c?.guild) return [];
-    return [...c.guild.channels.cache.values()]
-      .filter(ch => ch.isTextBased() && !ch.isThread())
+    return c?.guild ?? null;
+  }
+
+  async function guildChannels() {
+    const guild = await getWebGuild();
+    if (!guild) return [];
+
+    const channels = await guild.channels.fetch().catch(() => null);
+    const values = channels ? [...channels.values()] : [...guild.channels.cache.values()];
+
+    return values
+      .filter(ch => ch?.isTextBased?.() && !ch.isThread())
       .map(ch => ({ id: ch.id, name: ch.name }))
       .sort((a, b) => a.name.localeCompare(b.name, 'ja'));
   }
@@ -360,7 +375,7 @@ export function startWeb({ client }) {
                     <span>#${esc(c.name)}</span>
                     <span class="muted mono">(${c.id})</span>
                   </label>
-                `).join('') || `<div class="muted">チャンネル取得に失敗しました（CONSOLE_CHANNEL_IDのGuildを確認）</div>`}
+                `).join('') || `<div class="muted">チャンネル取得に失敗しました（WEB_GUILD_ID または CONSOLE_CHANNEL_ID の Guild を確認）</div>`}
               </div>
             </div>
 
