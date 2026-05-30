@@ -1,7 +1,10 @@
 import fs from 'fs';
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from 'discord.js';
+import { getBackfillDays } from './backfillConfig.js';
 import { getTargetsByPlatform } from './db.js';
 import { backfillXRssAndPost } from './xRssWorker.js';
+import { backfillYouTubeAndPost } from './youtubeWorker.js';
+import { backfillTwitchAndPost } from './twitchWorker.js';
 import { createMonitor } from './monitor.js';
 
 let running = false;
@@ -12,13 +15,15 @@ const load = () => { try { return JSON.parse(fs.readFileSync(statePath, 'utf8'))
 const save = (s) => fs.writeFileSync(statePath, JSON.stringify(s, null, 2), 'utf8');
 
 function buildEmbed() {
+  const backfillDays = getBackfillDays();
+
   return new EmbedBuilder()
     .setTitle('通知Bot コンソール')
     .setDescription(
       `状態: **${running ? '稼働中' : '停止中'}**\n` +
       `通知: URLのみ送信\n` +
       `ログ: LOG_CHANNEL_ID に送信（設定時）\n` +
-      `- 起動: X(RSS)を2日前から差分投稿→常時監視開始（RSS/YouTube/Twitch）\n` +
+      `- 起動: X(RSS)/YouTube/Twitchを${backfillDays}日前から差分投稿→常時監視開始\n` +
       `- 停止: 監視停止\n` +
       `- 終了: プロセス終了`
     );
@@ -77,11 +82,18 @@ export async function wireConsolePanel({ client, logger }) {
           await upsert();
           logger?.info?.('start pressed');
 
-          // 起動時：X(RSS)を2日前から差分投稿
-          const xTargets = getTargetsByPlatform('x_rss');
-          for (const t of xTargets) {
-            try { await backfillXRssAndPost({ client, target: t, logger }); }
-            catch (e) { logger?.error?.(`[x_rss backfill] target#${t.id} ${(e?.message)||e}`); }
+          // 起動時：各プラットフォームを指定日数前から差分投稿
+          const backfillJobs = [
+            { platform: 'x_rss', handler: backfillXRssAndPost },
+            { platform: 'youtube', handler: backfillYouTubeAndPost },
+            { platform: 'twitch', handler: backfillTwitchAndPost },
+          ];
+          for (const { platform, handler } of backfillJobs) {
+            const targets = getTargetsByPlatform(platform);
+            for (const t of targets) {
+              try { await handler({ client, target: t, logger }); }
+              catch (e) { logger?.error?.(`[${platform} backfill] target#${t.id} ${(e?.message)||e}`); }
+            }
           }
 
           // 常時監視：要件の「30件ずつ順番に」実行

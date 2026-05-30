@@ -18,7 +18,7 @@ X（RSS）/ YouTube / Twitch の更新を監視し、設定した Discord チャ
 - Web 管理画面で通知対象（X/YouTube/Twitch）と送信先 Discord チャンネルを登録/編集/削除
 - Discord のコンソールパネル（起動/停止/終了ボタン）から監視制御
 - 重複投稿防止（SQLite に投稿済み履歴を保存）
-- 起動時に X（RSS）を直近2日分さかのぼって差分通知（仕様）
+- 起動時に X（RSS）/ YouTube / Twitch を設定日数分さかのぼって差分通知（仕様）
 
 ### 動作イメージ
 
@@ -118,6 +118,8 @@ cp .env.example .env
   HTTP リクエストのタイムアウト（ミリ秒）
 - `FEED_MAX_BYTES`  
   RSS 取得時の最大サイズ（バイト）
+- `BACKFILL_DAYS`  
+  Discord コンソールで「起動」を押したときに、X（RSS）/ YouTube / Twitch を何日前までさかのぼって差分投稿するか（例: `2`）。未設定または不正な値の場合は `2` 日です。Twitch は現在ライブ中の配信が対象で、配信開始時刻がこの範囲内の場合に通知します。
 - `JOB_TIMEOUT_MS`  
   各ジョブのタイムアウト（ミリ秒）
 - `JOB_STALE_MS`  

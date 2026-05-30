@@ -1,4 +1,5 @@
 import Parser from 'rss-parser';
+import { getBackfillSinceDate } from './backfillConfig.js';
 import { isPosted, markPosted, getChannelIdsByTargetId } from './db.js';
 
 // Uses YouTube RSS (videos.xml). Accepts:
@@ -92,6 +93,11 @@ async function parseFeedWithOneRetry(feedUrl, retryDelayMs = 1500) {
     }
     throw e;
   }
+}
+
+function parseDateSafe(v) {
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 function getItemKey(item) {
@@ -267,11 +273,11 @@ async function buildFeedUrlFromTarget(target, diag = null) {
 // ----------------------
 // Main
 // ----------------------
-export async function checkYouTubeLatest({ client, target, maxItems = 5, logger }) {
+async function fetchYouTubeFeedForTarget({ target, logger }) {
   const b = getBackoff(target.id);
   if (b) {
     logger?.warn?.(`youtube target#${target.id} backoff (status=${b.lastStatus})`);
-    return { posted: 0, skipped: 0 };
+    return null;
   }
 
   const resolveDiag = [];
@@ -281,27 +287,26 @@ export async function checkYouTubeLatest({ client, target, maxItems = 5, logger 
     setBackoff(target.id, 404);
     const detail = resolveDiag.length > 0 ? ` tried=${resolveDiag.slice(0, 5).join(',')}` : '';
     logger?.error?.(`youtube target#${target.id} invalid input: set channel_id (UC...), feed URL, handle/@handle, or channel name.${detail}`);
-    return { posted: 0, skipped: 0 };
+    return null;
   }
 
-  let feed;
   try {
-    feed = await parseFeedWithOneRetry(feedUrl);
+    const feed = await parseFeedWithOneRetry(feedUrl);
     clearBackoff(target.id);
+    return { feed, feedUrl };
   } catch (e) {
     const status = parseStatusFromError(e) ?? 0;
     setBackoff(target.id, status || 0);
     logger?.error?.(`youtube target#${target.id} fetch failed status=${status || 'unknown'} url=${feedUrl}`);
-    return { posted: 0, skipped: 0 };
+    return null;
   }
+}
 
-  const items = Array.isArray(feed.items) ? feed.items : [];
-  const latest = items.slice(0, maxItems).reverse();
-
+async function postYouTubeItems({ client, target, feed, feedUrl, items, logger }) {
   let postedCount = 0;
   let skippedCount = 0;
 
-  for (const item of latest) {
+  for (const item of items) {
     const key = getItemKey(item);
     if (isPosted(target.id, 'youtube', key)) { skippedCount++; continue; }
 
@@ -324,4 +329,35 @@ export async function checkYouTubeLatest({ client, target, maxItems = 5, logger 
   }
 
   return { posted: postedCount, skipped: skippedCount };
+}
+
+export async function backfillYouTubeAndPost({ client, target, logger }) {
+  const fetched = await fetchYouTubeFeedForTarget({ target, logger });
+  if (!fetched) return { posted: 0, skipped: 0 };
+
+  const { feed, feedUrl } = fetched;
+  const since = getBackfillSinceDate();
+  const items = Array.isArray(feed.items) ? feed.items : [];
+  const filtered = items.filter((it) => {
+    const dt = parseDateSafe(it.isoDate || it.pubDate);
+    if (!dt) return true;
+    return dt >= since;
+  }).sort((a, b) => {
+    const da = parseDateSafe(a.isoDate || a.pubDate)?.getTime() ?? 0;
+    const dbt = parseDateSafe(b.isoDate || b.pubDate)?.getTime() ?? 0;
+    return da - dbt;
+  });
+
+  return postYouTubeItems({ client, target, feed, feedUrl, items: filtered, logger });
+}
+
+export async function checkYouTubeLatest({ client, target, maxItems = 5, logger }) {
+  const fetched = await fetchYouTubeFeedForTarget({ target, logger });
+  if (!fetched) return { posted: 0, skipped: 0 };
+
+  const { feed, feedUrl } = fetched;
+  const items = Array.isArray(feed.items) ? feed.items : [];
+  const latest = items.slice(0, maxItems).reverse();
+
+  return postYouTubeItems({ client, target, feed, feedUrl, items: latest, logger });
 }

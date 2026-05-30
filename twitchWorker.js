@@ -1,3 +1,4 @@
+import { getBackfillSinceDate } from './backfillConfig.js';
 import { isPosted, markPosted, getChannelIdsByTargetId } from './db.js';
 
 let tokenCache = { access_token: null, expires_at: 0 };
@@ -66,17 +67,20 @@ async function sendUrlToChannels({ client, targetId, url }) {
   }
 }
 
-export async function checkTwitchLive({ client, target, logger }) {
-  const login = (target.twitch ?? '').toString().trim()
+function parseDateSafe(v) {
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function normalizeTwitchLogin(value) {
+  return (value ?? '').toString().trim()
     .replace(/^https?:\/\//, '')
     .replace(/^www\./,'')
     .replace(/^twitch\.tv\//,'')
     .replace(/\/$/, '');
-  if (!login) return { posted: 0, skipped: 0 };
+}
 
-  const stream = await fetchLiveStreamByLogin(login);
-  if (!stream) return { posted: 0, skipped: 0 };
-
+async function postTwitchStream({ client, target, login, stream, logger }) {
   const key = String(stream.id);
   if (isPosted(target.id, 'twitch', key)) return { posted: 0, skipped: 1 };
 
@@ -98,4 +102,27 @@ export async function checkTwitchLive({ client, target, logger }) {
   logger?.info?.(`sent twitch target#${target.id} ${url}`);
 
   return { posted: 1, skipped: 0 };
+}
+
+export async function backfillTwitchAndPost({ client, target, logger }) {
+  const login = normalizeTwitchLogin(target.twitch);
+  if (!login) return { posted: 0, skipped: 0 };
+
+  const stream = await fetchLiveStreamByLogin(login);
+  if (!stream) return { posted: 0, skipped: 0 };
+
+  const started = parseDateSafe(stream.started_at);
+  if (started && started < getBackfillSinceDate()) return { posted: 0, skipped: 1 };
+
+  return postTwitchStream({ client, target, login, stream, logger });
+}
+
+export async function checkTwitchLive({ client, target, logger }) {
+  const login = normalizeTwitchLogin(target.twitch);
+  if (!login) return { posted: 0, skipped: 0 };
+
+  const stream = await fetchLiveStreamByLogin(login);
+  if (!stream) return { posted: 0, skipped: 0 };
+
+  return postTwitchStream({ client, target, login, stream, logger });
 }

@@ -1,13 +1,10 @@
 import Parser from 'rss-parser';
+import { getBackfillSinceDate } from './backfillConfig.js';
 import { isPosted, markPosted, getChannelIdsByTargetId } from './db.js';
 
 const parser = new Parser();
 const HTTP_TIMEOUT_MS = Number(process.env.HTTP_TIMEOUT_MS || 15000);
 const FEED_MAX_BYTES = Number(process.env.FEED_MAX_BYTES || 2 * 1024 * 1024);
-
-function twoDaysAgo() {
-  return new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
-}
 function parseDateSafe(v) {
   const d = new Date(v);
   return Number.isNaN(d.getTime()) ? null : d;
@@ -48,7 +45,7 @@ export async function backfillXRssAndPost({ client, target, logger }) {
   const feedUrl = target.x_rss?.toString().trim();
   if (!feedUrl) return { posted: 0, skipped: 0 };
 
-  const since = twoDaysAgo();
+  const since = getBackfillSinceDate();
   const feed = await parseRssWithTimeout(feedUrl);
   const items = Array.isArray(feed.items) ? feed.items : [];
 
