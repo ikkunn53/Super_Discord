@@ -58,13 +58,24 @@ async function fetchWithTimeout(url, init) {
   }
 }
 
-async function sendUrlToChannels({ client, targetId, url }) {
+async function sendTwitchNotificationToChannels({ client, targetId, url, stream }) {
   const channelIds = getChannelIdsByTargetId(targetId);
+  const title = stream.title?.toString().trim();
+  const embeds = title ? [{
+    title: truncateDiscordEmbedTitle(title),
+    url,
+    color: 0x9146ff
+  }] : [];
+
   for (const chId of channelIds) {
     const ch = await client.channels.fetch(chId).catch(() => null);
     if (!ch?.isTextBased()) continue;
-    await ch.send(url);
+    await ch.send({ content: `<${url}>`, embeds, allowedMentions: { parse: [] } });
   }
+}
+
+function truncateDiscordEmbedTitle(title) {
+  return title.length > 256 ? `${title.slice(0, 253)}...` : title;
 }
 
 function parseDateSafe(v) {
@@ -87,7 +98,7 @@ async function postTwitchStream({ client, target, login, stream, logger }) {
   const url = `https://www.twitch.tv/${login}`;
   const startedAt = stream.started_at ?? null;
 
-  await sendUrlToChannels({ client, targetId: target.id, url });
+  await sendTwitchNotificationToChannels({ client, targetId: target.id, url, stream });
 
   markPosted({
     target_id: target.id,
