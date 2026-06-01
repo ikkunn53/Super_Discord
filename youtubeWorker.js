@@ -20,7 +20,7 @@ const FEED_MAX_BYTES = Number(process.env.FEED_MAX_BYTES || 2 * 1024 * 1024);
 // ----------------------
 // Backoff (per target)
 // ----------------------
-const backoff = new Map(); // targetId -> { nextAt:number, lastStatus:number, fails:number }
+const backoff = new Map(); // targetId -> { nextAt:number, lastStatus:number, fails:number, skipLogged:boolean }
 const handleCache = new Map(); // key -> { channelId:string, at:number }
 const HANDLE_CACHE_TTL_MS = 6 * 60 * 60_000; // 6h
 
@@ -37,7 +37,7 @@ function setBackoff(targetId, status) {
   if (status == 404) waitMs = 30 * 60_000;
   else if (status >= 500 && status <= 599) waitMs = Math.min(5 * 60_000, 15_000 * (2 ** Math.min(6, fails)));
 
-  backoff.set(targetId, { nextAt: nowMs() + waitMs, lastStatus: status, fails });
+  backoff.set(targetId, { nextAt: nowMs() + waitMs, lastStatus: status, fails, skipLogged: false });
 }
 
 function clearBackoff(targetId) {
@@ -47,8 +47,16 @@ function clearBackoff(targetId) {
 function getBackoff(targetId) {
   const b = backoff.get(targetId);
   if (!b) return null;
-  if (nowMs() >= b.nextAt) return null;
+  if (nowMs() >= b.nextAt) {
+    backoff.delete(targetId);
+    return null;
+  }
   return b;
+}
+
+function markBackoffSkipLogged(targetId) {
+  const b = backoff.get(targetId);
+  if (b) b.skipLogged = true;
 }
 
 // ----------------------
@@ -276,7 +284,10 @@ async function buildFeedUrlFromTarget(target, diag = null) {
 async function fetchYouTubeFeedForTarget({ target, logger }) {
   const b = getBackoff(target.id);
   if (b) {
-    logger?.warn?.(`youtube target#${target.id} backoff (status=${b.lastStatus})`);
+    if (!b.skipLogged) {
+      logger?.warn?.(`youtube target#${target.id} backoff (status=${b.lastStatus})`);
+      markBackoffSkipLogged(target.id);
+    }
     return null;
   }
 

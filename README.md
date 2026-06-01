@@ -1,7 +1,8 @@
 # Super Discord 通知BOT
 
 Discord サーバー向けの通知 BOT です。  
-X（RSS）/ YouTube / Twitch の更新を監視し、設定した Discord チャンネルへ **URL のみ**を通知します。
+X（RSS）/ YouTube / Twitch の更新を監視し、設定した Discord チャンネルへ通知します。
+X（RSS）/ YouTube は **URL のみ**を通知し、Twitch はURL本文に加えて配信タイトルをDiscord埋め込みで表示します。
 
 ---
 
@@ -11,7 +12,7 @@ X（RSS）/ YouTube / Twitch の更新を監視し、設定した Discord チャ
 
 - **X（RSS）**: RSS フィードを取得し、新着投稿 URL を通知
 - **YouTube**: チャンネル更新（動画投稿）を取得して URL を通知
-- **Twitch**: 配信開始（ライブ）を検知して URL を通知
+- **Twitch**: 配信開始（ライブ）を検知して URL を通知し、配信タイトルをDiscord埋め込みに表示
 
 ### 主な機能
 
@@ -25,7 +26,7 @@ X（RSS）/ YouTube / Twitch の更新を監視し、設定した Discord チャ
 1. BOT 起動
 2. Discord のコンソールパネルから「起動」を押す
 3. 監視対象を一定間隔でチェック
-4. 新着があれば対象チャンネルへ URL を送信
+4. 新着があれば対象チャンネルへ通知（TwitchはURLに加えて配信タイトルの埋め込みを表示）
 
 ---
 
@@ -157,6 +158,7 @@ npm start
 
 ## 注意事項
 
+- Twitch の配信タイトル表示は、Discord/Twitch が自動生成するリンクプレビューを書き換えるものではなく、BOT が明示的に付与するDiscord埋め込みで表示します。
 - `.env` は機密情報を含むため、絶対に公開しないでください。
 - `DISCORD_TOKEN` や `TWITCH_CLIENT_SECRET` が漏えいした場合は、必ず再発行してください。
 - 監視対象が多い場合は `BATCH_SIZE` や `BATCH_INTERVAL_MS` を調整してください。
