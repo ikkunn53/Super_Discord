@@ -32,7 +32,7 @@ function acquireLockOrExit() {
       return;
     } catch (e) {
       if (e?.code !== 'EEXIST') {
-        console.error(`Failed to create lock file: ${e?.message || e}`);
+        console.error(`ロックファイルの作成に失敗しました: ${e?.message || e}`);
         process.exit(1);
       }
     }
@@ -47,14 +47,14 @@ function acquireLockOrExit() {
     }
 
     if (isPidRunning(existingPid)) {
-      console.error(`Already running (pid=${existingPid})`);
+      console.error(`すでに起動中です（pid=${existingPid}）`);
       process.exit(1);
     }
 
     try { fs.unlinkSync(LOCK); } catch {}
   }
 
-  console.error('Already running');
+  console.error('すでに起動中です');
   process.exit(1);
 }
 
@@ -62,24 +62,24 @@ acquireLockOrExit();
 process.on('exit', () => { try { fs.unlinkSync(LOCK); } catch {} });
 
 if (!process.env.DISCORD_TOKEN) {
-  console.error('DISCORD_TOKEN is required');
+  console.error('DISCORD_TOKEN が未設定です');
   process.exit(1);
 }
 if (!process.env.CONSOLE_CHANNEL_ID) {
-  console.error('CONSOLE_CHANNEL_ID is required');
+  console.error('CONSOLE_CHANNEL_ID が未設定です');
   process.exit(1);
 }
 
 initDb();
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
-client.on('error', (e) => console.error('[client error]', e));
+client.on('error', (e) => console.error('[Discordクライアントエラー]', e));
 
 client.once('ready', async () => {
-  console.log(`Logged in as ${client.user.tag}`);
+  console.log(`Discordにログインしました: ${client.user.tag}`);
 
   const logger = createDiscordLogger({ client, logChannelId: process.env.LOG_CHANNEL_ID });
-  if (process.env.LOG_CHANNEL_ID) logger.info('logger ready');
+  if (process.env.LOG_CHANNEL_ID) logger.info('[ログ] Discordログ送信の準備ができました');
 
   startWeb({ client });
   await wireConsolePanel({ client, logger });
