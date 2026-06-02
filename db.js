@@ -5,6 +5,7 @@ const db = new Database(process.env.DB_PATH || './app.db');
 
 export function initDb() {
   db.pragma('foreign_keys = ON');
+  migrateExistingTablesBeforeSchema();
   const schema = fs.readFileSync('./schema.sql', 'utf8');
   db.exec(schema);
   migrateTargetsEnabledIfNeeded();
@@ -228,7 +229,21 @@ export function getDashboardStats() {
 
 export default db;
 
+function migrateExistingTablesBeforeSchema() {
+  migrateTargetsEnabledIfNeeded();
+}
+
+function tableExists(name) {
+  return !!db.prepare(`
+    SELECT 1 FROM sqlite_master
+    WHERE type='table' AND name=?
+    LIMIT 1
+  `).get(name);
+}
+
 function migrateTargetsEnabledIfNeeded() {
+  if (!tableExists('targets')) return;
+
   const cols = db.prepare(`PRAGMA table_info('targets')`).all().map(c => c.name);
   if (!cols.includes('enabled')) {
     db.exec(`ALTER TABLE targets ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;`);
