@@ -1,6 +1,7 @@
 import Parser from 'rss-parser';
 import { getBackfillSinceDate } from './backfillConfig.js';
-import { isPosted, markPosted, getChannelIdsByTargetId } from './db.js';
+import { isPosted, markPosted, getChannelIdsByTargetId, recordTargetStatus } from './db.js';
+import { formatNotificationContent } from './notifyFormat.js';
 
 const parser = new Parser();
 const HTTP_TIMEOUT_MS = Number(process.env.HTTP_TIMEOUT_MS || 15000);
@@ -13,12 +14,13 @@ function getItemKey(item) {
   return item.guid || item.id || item.link || `${item.title ?? 'no-title'}|${item.pubDate ?? item.isoDate ?? ''}`;
 }
 
-async function sendUrlToChannels({ client, targetId, url }) {
+async function sendUrlToChannels({ client, targetId, url, title }) {
   const channelIds = getChannelIdsByTargetId(targetId);
+  const content = formatNotificationContent('x_rss', { url, title, targetId });
   for (const chId of channelIds) {
     const ch = await client.channels.fetch(chId).catch(() => null);
     if (!ch?.isTextBased()) continue;
-    await ch.send(url);
+    await ch.send(content);
   }
 }
 
@@ -70,7 +72,7 @@ export async function backfillXRssAndPost({ client, target, logger }) {
     const published = item.isoDate || item.pubDate || null;
 
     // step2: send first
-    await sendUrlToChannels({ client, targetId: target.id, url });
+    await sendUrlToChannels({ client, targetId: target.id, url, title: item.title || '' });
 
     // then mark posted
     markPosted({
@@ -83,9 +85,11 @@ export async function backfillXRssAndPost({ client, target, logger }) {
       posted_message_id: null
     });
     postedCount++;
-    logger?.info?.(`sent rss target#${target.id} ${url}`);
+    if (logger?.success) logger.success(`[X/RSS] 対象#${target.id} の新着を送信しました: ${url}`);
+    else logger?.info?.(`[X/RSS] 対象#${target.id} の新着を送信しました: ${url}`);
   }
 
+  recordTargetStatus({ target_id: target.id, platform: 'x_rss', ok: true, posted: postedCount, skipped: skippedCount });
   return { posted: postedCount, skipped: skippedCount };
 }
 
@@ -107,7 +111,7 @@ export async function checkXRssLatest({ client, target, maxItems = 5, logger }) 
     const url = item.link || feed.link || feedUrl;
     const published = item.isoDate || item.pubDate || null;
 
-    await sendUrlToChannels({ client, targetId: target.id, url });
+    await sendUrlToChannels({ client, targetId: target.id, url, title: item.title || '' });
 
     markPosted({
       target_id: target.id,
@@ -119,7 +123,9 @@ export async function checkXRssLatest({ client, target, maxItems = 5, logger }) 
       posted_message_id: null
     });
     postedCount++;
-    logger?.info?.(`sent rss target#${target.id} ${url}`);
+    if (logger?.success) logger.success(`[X/RSS] 対象#${target.id} の新着を送信しました: ${url}`);
+    else logger?.info?.(`[X/RSS] 対象#${target.id} の新着を送信しました: ${url}`);
   }
+  recordTargetStatus({ target_id: target.id, platform: 'x_rss', ok: true, posted: postedCount, skipped: skippedCount });
   return { posted: postedCount, skipped: skippedCount };
 }

@@ -1,6 +1,7 @@
 import Parser from 'rss-parser';
 import { getBackfillSinceDate } from './backfillConfig.js';
-import { isPosted, markPosted, getChannelIdsByTargetId } from './db.js';
+import { isPosted, markPosted, getChannelIdsByTargetId, recordTargetStatus } from './db.js';
+import { formatNotificationContent } from './notifyFormat.js';
 
 // Uses YouTube RSS (videos.xml). Accepts:
 // - channel_id (UC...)
@@ -20,13 +21,13 @@ const FEED_MAX_BYTES = Number(process.env.FEED_MAX_BYTES || 2 * 1024 * 1024);
 // ----------------------
 // Backoff (per target)
 // ----------------------
-const backoff = new Map(); // targetId -> { nextAt:number, lastStatus:number, fails:number, skipLogged:boolean }
+const backoff = new Map(); // targetId -> { nextAt:number, lastStatus:number, fails:number, skipLogged:boolean, reason:string, detail:string }
 const handleCache = new Map(); // key -> { channelId:string, at:number }
 const HANDLE_CACHE_TTL_MS = 6 * 60 * 60_000; // 6h
 
 function nowMs() { return Date.now(); }
 
-function setBackoff(targetId, status) {
+function setBackoff(targetId, status, { reason = '不明なエラー', detail = '' } = {}) {
   const prev = backoff.get(targetId) || { nextAt: 0, lastStatus: 0, fails: 0 };
   const fails = prev.fails + 1;
 
@@ -37,7 +38,7 @@ function setBackoff(targetId, status) {
   if (status == 404) waitMs = 30 * 60_000;
   else if (status >= 500 && status <= 599) waitMs = Math.min(5 * 60_000, 15_000 * (2 ** Math.min(6, fails)));
 
-  backoff.set(targetId, { nextAt: nowMs() + waitMs, lastStatus: status, fails, skipLogged: false });
+  backoff.set(targetId, { nextAt: nowMs() + waitMs, lastStatus: status, fails, skipLogged: false, reason, detail });
 }
 
 function clearBackoff(targetId) {
@@ -62,6 +63,30 @@ function markBackoffSkipLogged(targetId) {
 // ----------------------
 // Helpers
 // ----------------------
+function formatDurationJa(ms) {
+  const totalSec = Math.max(0, Math.ceil(ms / 1000));
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  if (min > 0 && sec > 0) return `${min}分${sec}秒`;
+  if (min > 0) return `${min}分`;
+  return `${sec}秒`;
+}
+
+function truncateForLog(value, max = 160) {
+  const s = (value ?? '').toString().replace(/\s+/g, ' ').trim();
+  if (s.length <= max) return s;
+  return `${s.slice(0, max - 1)}…`;
+}
+
+function describeHttpStatus(status) {
+  if (status === 0 || !status) return 'HTTPステータス不明（タイムアウト・DNS・通信遮断など）';
+  if (status === 404) return '404 Not Found（チャンネルID/URLが存在しない、またはYouTube RSSで公開されていない可能性）';
+  if (status === 403) return '403 Forbidden（アクセス拒否・一時的な制限の可能性）';
+  if (status === 429) return '429 Too Many Requests（短時間のアクセス過多の可能性）';
+  if (status >= 500 && status <= 599) return `${status}（YouTube側の一時的なサーバーエラーの可能性）`;
+  return `${status}`;
+}
+
 function parseStatusFromError(err) {
   const statusNum = Number(err?.status ?? err?.statusCode ?? err?.response?.status);
   if (Number.isFinite(statusNum) && statusNum >= 100 && statusNum <= 599) return statusNum;
@@ -112,20 +137,28 @@ function getItemKey(item) {
   return item.id || item.guid || item.link || `${item.title ?? 'no-title'}|${item.pubDate ?? item.isoDate ?? ''}`;
 }
 
-async function sendUrlToChannels({ client, targetId, url }) {
+async function sendUrlToChannels({ client, targetId, url, title }) {
   const channelIds = getChannelIdsByTargetId(targetId);
+  const content = formatNotificationContent('youtube', { url, title, targetId });
   for (const chId of channelIds) {
     const ch = await client.channels.fetch(chId).catch(() => null);
     if (!ch?.isTextBased()) continue;
-    await ch.send(url);
+    await ch.send(content);
   }
 }
 
 function extractChannelIdFromText(text) {
-  const m1 = text.match(/\"channelId\"\s*:\s*\"(UC[\w-]{20,})\"/);
-  if (m1) return m1[1];
-  const m2 = text.match(/\/channel\/(UC[\w-]{20,})/);
-  if (m2) return m2[1];
+  const patterns = [
+    /\"channelId\"\s*:\s*\"(UC[\w-]{20,})\"/,
+    /\"browseId\"\s*:\s*\"(UC[\w-]{20,})\"/,
+    /\"externalId\"\s*:\s*\"(UC[\w-]{20,})\"/,
+    /<meta[^>]+itemprop=[\"']channelId[\"'][^>]+content=[\"'](UC[\w-]{20,})[\"']/i,
+    /\/channel\/(UC[\w-]{20,})/
+  ];
+  for (const pattern of patterns) {
+    const m = text.match(pattern);
+    if (m) return m[1];
+  }
   return null;
 }
 
@@ -189,7 +222,7 @@ async function resolveChannelIdFromUrls(urls, diag = null) {
       if (channelId) return channelId;
     } catch (_) {
       const status = parseStatusFromError(_);
-      pushDiag(diag, `${u}(${status || 'error'})`);
+      pushDiag(diag, `${u} => ${describeHttpStatus(status || 0)}`);
       // URLごとの失敗は記録しつつ次候補へ進む
     }
   }
@@ -278,6 +311,33 @@ async function buildFeedUrlFromTarget(target, diag = null) {
   return null;
 }
 
+export async function validateYouTubeInput(value) {
+  const diag = [];
+  const target = { id: 0, youtube: value };
+  const feedUrl = await buildFeedUrlFromTarget(target, diag);
+  if (!feedUrl) {
+    return { ok: false, message: 'チャンネルID/RSS URLを解決できませんでした', feedUrl: null, diagnostics: diag };
+  }
+
+  try {
+    const feed = await parseFeedWithOneRetry(feedUrl);
+    const items = Array.isArray(feed.items) ? feed.items : [];
+    const latest = items[0] || null;
+    return {
+      ok: true,
+      message: 'YouTube RSSを取得できました',
+      feedUrl,
+      itemCount: items.length,
+      latestTitle: latest?.title || null,
+      latestUrl: latest?.link || null,
+      diagnostics: diag
+    };
+  } catch (e) {
+    const status = parseStatusFromError(e) ?? 0;
+    return { ok: false, message: describeHttpStatus(status), feedUrl, itemCount: 0, diagnostics: diag };
+  }
+}
+
 // ----------------------
 // Main
 // ----------------------
@@ -285,30 +345,43 @@ async function fetchYouTubeFeedForTarget({ target, logger }) {
   const b = getBackoff(target.id);
   if (b) {
     if (!b.skipLogged) {
-      logger?.warn?.(`youtube target#${target.id} backoff (status=${b.lastStatus})`);
+      const remaining = formatDurationJa(b.nextAt - nowMs());
+      const reason = b.reason ? ` 理由=${b.reason}` : '';
+      const detail = b.detail ? ` 詳細=${b.detail}` : '';
+      logger?.warn?.(`[YouTube] 対象#${target.id} は一時停止中です（残り約${remaining} / ${describeHttpStatus(b.lastStatus)} / 失敗回数=${b.fails}）。${reason}${detail}`);
       markBackoffSkipLogged(target.id);
     }
     return null;
   }
 
+  const rawInput = truncateForLog(target.youtube);
+  logger?.debug?.(`[YouTube] 対象#${target.id} の確認開始: 入力=${rawInput}`);
+
   const resolveDiag = [];
   const feedUrl = await buildFeedUrlFromTarget(target, resolveDiag);
+  logger?.debug?.(`[YouTube] 対象#${target.id} のRSS URL解決結果: ${feedUrl || '解決できませんでした'}`);
 
   if (!feedUrl) {
-    setBackoff(target.id, 404);
-    const detail = resolveDiag.length > 0 ? ` tried=${resolveDiag.slice(0, 5).join(',')}` : '';
-    logger?.error?.(`youtube target#${target.id} invalid input: set channel_id (UC...), feed URL, handle/@handle, or channel name.${detail}`);
+    const detail = resolveDiag.length > 0 ? `試行=${resolveDiag.slice(0, 5).join(' / ')}` : `入力=${rawInput}`;
+    setBackoff(target.id, 404, { reason: 'YouTubeチャンネルIDを解決できませんでした', detail });
+    recordTargetStatus({ target_id: target.id, platform: 'youtube', ok: false, error_message: `YouTubeチャンネルIDを解決できませんでした。${detail}`, http_status: 404 });
+    logger?.error?.(`[YouTube] 対象#${target.id} の設定を解決できません。推奨: Channel ID（UC...）または https://www.youtube.com/feeds/videos.xml?channel_id=UC... を登録してください。${detail}`);
     return null;
   }
 
   try {
+    logger?.debug?.(`[YouTube] 対象#${target.id} のRSS取得開始: ${feedUrl}`);
     const feed = await parseFeedWithOneRetry(feedUrl);
     clearBackoff(target.id);
+    const count = Array.isArray(feed.items) ? feed.items.length : 0;
+    logger?.debug?.(`[YouTube] 対象#${target.id} のRSS取得成功: item数=${count}`);
     return { feed, feedUrl };
   } catch (e) {
     const status = parseStatusFromError(e) ?? 0;
-    setBackoff(target.id, status || 0);
-    logger?.error?.(`youtube target#${target.id} fetch failed status=${status || 'unknown'} url=${feedUrl}`);
+    const statusText = describeHttpStatus(status || 0);
+    setBackoff(target.id, status || 0, { reason: 'YouTube RSSの取得に失敗しました', detail: `url=${feedUrl}` });
+    recordTargetStatus({ target_id: target.id, platform: 'youtube', ok: false, error_message: `YouTube RSSの取得に失敗しました: ${statusText}`, http_status: status || 0 });
+    logger?.error?.(`[YouTube] 対象#${target.id} のRSS取得に失敗しました: ${statusText} url=${feedUrl}`);
     return null;
   }
 }
@@ -319,12 +392,16 @@ async function postYouTubeItems({ client, target, feed, feedUrl, items, logger }
 
   for (const item of items) {
     const key = getItemKey(item);
-    if (isPosted(target.id, 'youtube', key)) { skippedCount++; continue; }
+    if (isPosted(target.id, 'youtube', key)) {
+      skippedCount++;
+      logger?.debug?.(`[YouTube] 対象#${target.id} は投稿済みのためスキップ: key=${truncateForLog(key, 80)}`);
+      continue;
+    }
 
     const url = item.link || feed.link || feedUrl;
     const published = item.isoDate || item.pubDate || null;
 
-    await sendUrlToChannels({ client, targetId: target.id, url });
+    await sendUrlToChannels({ client, targetId: target.id, url, title: item.title || '' });
 
     markPosted({
       target_id: target.id,
@@ -336,9 +413,15 @@ async function postYouTubeItems({ client, target, feed, feedUrl, items, logger }
       posted_message_id: null
     });
     postedCount++;
-    logger?.info?.(`sent youtube target#${target.id} ${url}`);
+    if (logger?.success) logger.success(`[YouTube] 対象#${target.id} の新着を送信しました: ${url}`);
+    else logger?.info?.(`[YouTube] 対象#${target.id} の新着を送信しました: ${url}`);
   }
 
+  if (postedCount === 0 && skippedCount > 0) {
+    logger?.debug?.(`[YouTube] 対象#${target.id} は新規投稿なし（投稿済み=${skippedCount}件）`);
+  }
+
+  recordTargetStatus({ target_id: target.id, platform: 'youtube', ok: true, posted: postedCount, skipped: skippedCount });
   return { posted: postedCount, skipped: skippedCount };
 }
 
