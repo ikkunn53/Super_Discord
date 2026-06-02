@@ -1,5 +1,6 @@
 import { getBackfillSinceDate } from './backfillConfig.js';
-import { isPosted, markPosted, getChannelIdsByTargetId } from './db.js';
+import { isPosted, markPosted, getChannelIdsByTargetId, recordTargetStatus } from './db.js';
+import { formatNotificationContent } from './notifyFormat.js';
 
 let tokenCache = { access_token: null, expires_at: 0 };
 const HTTP_TIMEOUT_MS = Number(process.env.HTTP_TIMEOUT_MS || 15000);
@@ -12,7 +13,7 @@ async function getAppAccessToken() {
 
   const clientId = process.env.TWITCH_CLIENT_ID;
   const clientSecret = process.env.TWITCH_CLIENT_SECRET;
-  if (!clientId || !clientSecret) throw new Error('TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET が未設定です');
+  if (!clientId || !clientSecret) throw new Error('Twitch設定エラー: TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET が未設定です');
 
   const url = new URL('https://id.twitch.tv/oauth2/token');
   url.searchParams.set('client_id', clientId);
@@ -20,7 +21,7 @@ async function getAppAccessToken() {
   url.searchParams.set('grant_type', 'client_credentials');
 
   const res = await fetchWithTimeout(url.toString(), { method: 'POST' });
-  if (!res.ok) throw new Error(`Twitch token error: ${res.status}`);
+  if (!res.ok) throw new Error(`Twitchトークン取得エラー: HTTP ${res.status}`);
   const data = await res.json();
 
   tokenCache.access_token = data.access_token;
@@ -41,7 +42,7 @@ async function fetchLiveStreamByLogin(login) {
       'Authorization': `Bearer ${token}`
     }
   });
-  if (!res.ok) throw new Error(`Twitch streams error: ${res.status}`);
+  if (!res.ok) throw new Error(`Twitch配信情報取得エラー: HTTP ${res.status}`);
   const json = await res.json();
   const arr = json?.data;
   if (!Array.isArray(arr) || arr.length === 0) return null;
@@ -70,7 +71,8 @@ async function sendTwitchNotificationToChannels({ client, targetId, url, stream 
   for (const chId of channelIds) {
     const ch = await client.channels.fetch(chId).catch(() => null);
     if (!ch?.isTextBased()) continue;
-    await ch.send({ content: `<${url}>`, embeds, allowedMentions: { parse: [] } });
+    const content = formatNotificationContent('twitch', { url, title, targetId, login: stream.user_login || '' });
+    await ch.send({ content, embeds, allowedMentions: { parse: [] } });
   }
 }
 
@@ -93,7 +95,10 @@ function normalizeTwitchLogin(value) {
 
 async function postTwitchStream({ client, target, login, stream, logger }) {
   const key = String(stream.id);
-  if (isPosted(target.id, 'twitch', key)) return { posted: 0, skipped: 1 };
+  if (isPosted(target.id, 'twitch', key)) {
+    recordTargetStatus({ target_id: target.id, platform: 'twitch', ok: true, posted: 0, skipped: 1 });
+    return { posted: 0, skipped: 1 };
+  }
 
   const url = `https://www.twitch.tv/${login}`;
   const startedAt = stream.started_at ?? null;
@@ -110,8 +115,10 @@ async function postTwitchStream({ client, target, login, stream, logger }) {
     posted_message_id: null
   });
 
-  logger?.info?.(`sent twitch target#${target.id} ${url}`);
+  if (logger?.success) logger.success(`[Twitch] 対象#${target.id} の配信通知を送信しました: ${url}`);
+  else logger?.info?.(`[Twitch] 対象#${target.id} の配信通知を送信しました: ${url}`);
 
+  recordTargetStatus({ target_id: target.id, platform: 'twitch', ok: true, posted: 1, skipped: 0 });
   return { posted: 1, skipped: 0 };
 }
 
@@ -120,7 +127,10 @@ export async function backfillTwitchAndPost({ client, target, logger }) {
   if (!login) return { posted: 0, skipped: 0 };
 
   const stream = await fetchLiveStreamByLogin(login);
-  if (!stream) return { posted: 0, skipped: 0 };
+  if (!stream) {
+    recordTargetStatus({ target_id: target.id, platform: 'twitch', ok: true, posted: 0, skipped: 0 });
+    return { posted: 0, skipped: 0 };
+  }
 
   const started = parseDateSafe(stream.started_at);
   if (started && started < getBackfillSinceDate()) return { posted: 0, skipped: 1 };
@@ -133,7 +143,10 @@ export async function checkTwitchLive({ client, target, logger }) {
   if (!login) return { posted: 0, skipped: 0 };
 
   const stream = await fetchLiveStreamByLogin(login);
-  if (!stream) return { posted: 0, skipped: 0 };
+  if (!stream) {
+    recordTargetStatus({ target_id: target.id, platform: 'twitch', ok: true, posted: 0, skipped: 0 });
+    return { posted: 0, skipped: 0 };
+  }
 
   return postTwitchStream({ client, target, login, stream, logger });
 }

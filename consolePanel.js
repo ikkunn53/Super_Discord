@@ -21,18 +21,21 @@ function buildEmbed() {
     .setTitle('通知Bot コンソール')
     .setDescription(
       `状態: **${running ? '稼働中' : '停止中'}**\n` +
-      `通知: URLのみ送信\n` +
+      `通知: 登録テンプレートに従って送信（未設定時は標準文面）\n` +
       `ログ: LOG_CHANNEL_ID に送信（設定時）\n` +
-      `- 起動: X(RSS)/YouTube/Twitchを${backfillDays}日前から差分投稿→常時監視開始\n` +
-      `- 停止: 監視停止\n` +
-      `- 終了: プロセス終了`
+      `- 監視開始: 過去分を送らず常時監視のみ開始\n` +
+      `- 差分投稿して開始: X(RSS)/YouTube/Twitchを${backfillDays}日前から差分投稿→常時監視開始\n` +
+      `- 更新: このパネルの状態を再表示\n` +
+      `- 停止: 監視停止 / 終了: プロセス終了`
     );
 }
 
 function buildComponents() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('start').setLabel('起動').setStyle(ButtonStyle.Success).setDisabled(running),
+      new ButtonBuilder().setCustomId('start_monitor').setLabel('監視開始').setStyle(ButtonStyle.Success).setDisabled(running),
+      new ButtonBuilder().setCustomId('start_backfill').setLabel('差分投稿して開始').setStyle(ButtonStyle.Primary).setDisabled(running),
+      new ButtonBuilder().setCustomId('refresh').setLabel('更新').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('stop').setLabel('停止').setStyle(ButtonStyle.Secondary).setDisabled(!running),
       new ButtonBuilder().setCustomId('exit').setLabel('終了').setStyle(ButtonStyle.Danger),
     )
@@ -71,28 +74,35 @@ export async function wireConsolePanel({ client, logger }) {
   client.on('interactionCreate', async (i) => {
     if (!i.isButton()) return;
     if (i.channelId !== chId) return;
-    if (!['start','stop','exit'].includes(i.customId)) return;
+    if (!['start_monitor','start_backfill','refresh','stop','exit'].includes(i.customId)) return;
 
     await i.deferUpdate().catch(() => {});
 
     try {
-      if (i.customId === 'start') {
+      if (i.customId === 'refresh') {
+        logger?.info?.('[コンソール] 状態を更新しました');
+      }
+
+      if (i.customId === 'start_monitor' || i.customId === 'start_backfill') {
         if (!running) {
           running = true;
           await upsert();
-          logger?.info?.('start pressed');
+          const withBackfill = i.customId === 'start_backfill';
+          logger?.info?.(withBackfill ? '[コンソール] 差分投稿して開始が押されました' : '[コンソール] 監視開始が押されました');
 
-          // 起動時：各プラットフォームを指定日数前から差分投稿
-          const backfillJobs = [
-            { platform: 'x_rss', handler: backfillXRssAndPost },
-            { platform: 'youtube', handler: backfillYouTubeAndPost },
-            { platform: 'twitch', handler: backfillTwitchAndPost },
-          ];
-          for (const { platform, handler } of backfillJobs) {
-            const targets = getTargetsByPlatform(platform);
-            for (const t of targets) {
-              try { await handler({ client, target: t, logger }); }
-              catch (e) { logger?.error?.(`[${platform} backfill] target#${t.id} ${(e?.message)||e}`); }
+          if (withBackfill) {
+            // 起動時：各プラットフォームを指定日数前から差分投稿
+            const backfillJobs = [
+              { platform: 'x_rss', handler: backfillXRssAndPost },
+              { platform: 'youtube', handler: backfillYouTubeAndPost },
+              { platform: 'twitch', handler: backfillTwitchAndPost },
+            ];
+            for (const { platform, handler } of backfillJobs) {
+              const targets = getTargetsByPlatform(platform);
+              for (const t of targets) {
+                try { await handler({ client, target: t, logger }); }
+                catch (e) { logger?.error?.(`[${platform} backfill] target#${t.id} ${(e?.message)||e}`); }
+              }
             }
           }
 
@@ -105,7 +115,7 @@ export async function wireConsolePanel({ client, logger }) {
       if (i.customId === 'stop') {
         if (running) {
           running = false;
-          logger?.info?.('stop pressed');
+          logger?.info?.('[コンソール] 停止が押されました');
           if (monitor) {
             await monitor.stop();
             monitor = null;
@@ -114,7 +124,7 @@ export async function wireConsolePanel({ client, logger }) {
       }
 
       if (i.customId === 'exit') {
-        logger?.warn?.('exit pressed');
+        logger?.warn?.('[コンソール] 終了が押されました');
         if (monitor) {
           await monitor.stop().catch(()=>{});
           monitor = null;

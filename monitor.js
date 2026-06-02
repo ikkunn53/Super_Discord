@@ -1,4 +1,4 @@
-import { getAllTargets } from './db.js';
+import { getAllTargets, recordTargetStatus } from './db.js';
 import { checkXRssLatest } from './xRssWorker.js';
 import { checkYouTubeLatest } from './youtubeWorker.js';
 import { checkTwitchLive } from './twitchWorker.js';
@@ -36,11 +36,11 @@ export function createMonitor({ client, logger = console }) {
   }
 
   async function loop() {
-    logger.info?.(`monitor started batchSize=${batchSize} intervalMs=${batchIntervalMs}`);
+    logger.info?.(`[監視] 開始しました（batchSize=${batchSize}, intervalMs=${batchIntervalMs}, jobTimeoutMs=${jobTimeoutMs}）`);
     while (!stopped) {
       const tickStart = Date.now();
 
-      const targets = getAllTargets();
+      const targets = getAllTargets({ includeDisabled: false });
       const jobs = buildJobs(targets);
 
       if (jobs.length === 0) {
@@ -62,22 +62,23 @@ export function createMonitor({ client, logger = console }) {
             const age = Date.now() - startedAt;
             if (forceReleaseStale || age > hardReleaseMs) {
               const reason = forceReleaseStale ? 'by-config' : 'hard-release';
-              logger.error?.(`[monitor] ${jobKey} force-released (${reason}, in-flight ${age}ms)`);
+              logger.error?.(`[監視] ${jobKey} を強制解放しました（理由=${reason}, 実行中=${age}ms）`);
               inFlight.delete(jobKey);
             } else {
-              logger.error?.(`[monitor] ${jobKey} stale in-flight detected (> ${staleJobMs}ms), waiting (set JOB_FORCE_RELEASE_STALE=1 or tune JOB_STALE_HARD_RELEASE_MS)`);
+              logger.error?.(`[監視] ${jobKey} が長時間実行中です（${staleJobMs}ms超）。待機します（JOB_FORCE_RELEASE_STALE=1 または JOB_STALE_HARD_RELEASE_MS の調整を検討してください）`);
             }
             // stale検出時は同tickで再実行しない
             continue;
           } else {
-            logger.warn?.(`[monitor] ${jobKey} skipped (still in-flight)`);
+            logger.warn?.(`[監視] ${jobKey} は前回処理がまだ実行中のためスキップしました`);
             continue;
           }
         }
         try {
           await runJobWithTimeout(job, jobKey);
         } catch (e) {
-          logger.error?.(`[monitor] ${job.platform} target#${job.target.id} error ${(e?.message)||e}`);
+          recordTargetStatus({ target_id: job.target.id, platform: job.platform, ok: false, error_message: (e?.message)||e });
+          logger.error?.(`[監視] ${job.platform} 対象#${job.target.id} でエラーが発生しました: ${(e?.message)||e}`);
         }
       }
 
@@ -85,7 +86,7 @@ export function createMonitor({ client, logger = console }) {
       const wait = Math.max(0, batchIntervalMs - elapsed);
       if (wait > 0) await sleep(wait);
     }
-    logger.info?.('monitor stopped');
+    logger.info?.('[監視] 停止しました');
   }
 
   function start() {
@@ -114,7 +115,7 @@ export function createMonitor({ client, logger = console }) {
       return await Promise.race([
         runPromise,
         new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error(`job timeout: ${jobTimeoutMs}ms`)), jobTimeoutMs);
+          timer = setTimeout(() => reject(new Error(`ジョブがタイムアウトしました: ${jobTimeoutMs}ms`)), jobTimeoutMs);
         })
       ]);
     } finally {
