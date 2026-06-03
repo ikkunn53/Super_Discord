@@ -3,7 +3,7 @@
 Discord サーバー向けの通知BOTです。X（RSS）/ YouTube / Twitch を定期監視し、新着や配信開始を指定した Discord チャンネルへ通知します。
 
 - X（RSS）/ YouTube は、標準ではURLのみ通知します。
-- Twitch は、標準では本文に配信開始メッセージとURLを出し、Discord埋め込みにも配信タイトルを表示します。
+- Twitch は、標準では本文に「配信中」のみを出し、Discord埋め込みに配信タイトル・ゲーム名・視聴者数・サムネイル・視聴ボタン・配信者アイコンを表示します。
 - 通知本文は `NOTIFY_TEMPLATE_*` でカスタマイズできます。
 
 ---
@@ -285,6 +285,7 @@ SQLite の `posted` テーブルに保存された投稿済み履歴を確認で
 |---|---|
 | `TWITCH_CLIENT_ID` | TwitchアプリのClient ID |
 | `TWITCH_CLIENT_SECRET` | TwitchアプリのClient Secret |
+| `TWITCH_USER_CACHE_MS` | Twitch配信者アイコン取得用ユーザー情報キャッシュ時間（ミリ秒、標準: 1時間） |
 
 > Twitch通知を使わない場合は未設定でも構いません。ただしTwitch対象を登録して監視するとエラーになります。
 
@@ -308,7 +309,7 @@ SQLite の `posted` テーブルに保存された投稿済み履歴を確認で
 
 ```env
 NOTIFY_TEMPLATE_YOUTUBE=📺 YouTube 新着\n{title}\n{url}
-NOTIFY_TEMPLATE_TWITCH=🔴 Twitch 配信開始\n{title}\n{url}
+NOTIFY_TEMPLATE_TWITCH=配信中
 ```
 
 空欄の場合は標準文面を使います。
@@ -432,6 +433,6 @@ LOG_DEBUG=1
 - `.env` は機密情報を含むため、公開しないでください。
 - `DISCORD_TOKEN` や `TWITCH_CLIENT_SECRET` が漏えいした場合は、必ず再発行してください。
 - `差分投稿して開始` は過去分を通知します。誤通知を避けたい場合は `監視開始` を使ってください。
-- Twitch の配信タイトル表示は、Discord/Twitch の自動リンクプレビューを書き換えるものではなく、BOTが明示的に付与するDiscord埋め込みです。
+- Twitch の配信タイトルやサムネイル表示は、Discord/Twitch の自動リンクプレビューを書き換えるものではなく、BOTが明示的に付与するDiscord埋め込みです。
 - 投稿履歴を削除すると再通知される可能性があります。
 - 監視対象が多い場合は `BATCH_SIZE` や `BATCH_INTERVAL_MS` を調整してください。
