@@ -15,8 +15,7 @@ export function formatNotificationContent(platform, { url, title = '', targetId 
   }
 
   if (platform === 'twitch') {
-    const safeTitle = String(title ?? '').trim();
-    return safeTitle ? `🔴 Twitch 配信開始\n${safeTitle}\n${url}` : `<${url}>`;
+    return '配信中';
   }
 
   return String(url ?? '');
