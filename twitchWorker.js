@@ -1,3 +1,4 @@
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { getBackfillSinceDate } from './backfillConfig.js';
 import { isPosted, markPosted, getChannelIdsByTargetId, recordTargetStatus } from './db.js';
 import { formatNotificationContent } from './notifyFormat.js';
@@ -95,7 +96,7 @@ async function sendTwitchNotificationToChannels({ client, targetId, url, stream,
     const ch = await client.channels.fetch(chId).catch(() => null);
     if (!ch?.isTextBased()) continue;
     const content = formatNotificationContent('twitch', { url, title, targetId, login: stream.user_login || '' });
-    await ch.send({ content, embeds, allowedMentions: { parse: [] } });
+    await ch.send({ content, embeds, components, allowedMentions: { parse: [] } });
   }
 }
 
