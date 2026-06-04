@@ -91,14 +91,6 @@ async function sendTwitchNotificationToChannels({ client, targetId, url, stream,
   const channelIds = getChannelIdsByTargetId(targetId);
   const title = stream.title?.toString().trim();
   const embeds = [buildTwitchStreamEmbed({ stream, title, url, user })];
-  const components = [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setLabel('Watch Stream')
-        .setStyle(ButtonStyle.Link)
-        .setURL(url)
-    )
-  ];
 
   for (const chId of channelIds) {
     const ch = await client.channels.fetch(chId).catch(() => null);
@@ -130,12 +122,7 @@ function buildTwitchStreamEmbed({ stream, title, url, user }) {
 
   const gameName = stream.game_name?.toString().trim();
   if (gameName) {
-    embed.fields.push({ name: 'Game', value: truncateDiscordEmbedFieldValue(gameName), inline: true });
-  }
-
-  const viewerCount = formatViewerCount(stream.viewer_count);
-  if (viewerCount) {
-    embed.fields.push({ name: 'Viewers', value: viewerCount, inline: true });
+    embed.fields.push({ name: 'ゲームタイトル', value: truncateDiscordEmbedFieldValue(gameName), inline: true });
   }
 
   const thumbnailUrl = formatTwitchThumbnailUrl(stream.thumbnail_url);
@@ -161,13 +148,6 @@ function formatTwitchThumbnailUrl(thumbnailUrl) {
 function getValidEmbedTimestamp(value) {
   const date = parseDateSafe(value);
   return date ? date.toISOString() : new Date().toISOString();
-}
-
-function formatViewerCount(value) {
-  if (value === null || value === undefined || value === '') return null;
-  const count = Number(value);
-  if (!Number.isFinite(count)) return null;
-  return count.toLocaleString('en-US');
 }
 
 function truncateDiscordEmbedTitle(title) {

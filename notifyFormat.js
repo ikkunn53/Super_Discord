@@ -15,7 +15,7 @@ export function formatNotificationContent(platform, { url, title = '', targetId 
   }
 
   if (platform === 'twitch') {
-    return '配信中';
+    return String(url ?? '');
   }
 
   return String(url ?? '');
