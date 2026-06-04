@@ -148,7 +148,21 @@ export function markPosted({ target_id, platform, item_key, item_url, item_title
   );
 }
 
+export function hasTargetPlatformSuccess(targetId, platform) {
+  const posted = db.prepare(`
+    SELECT 1 FROM posted
+    WHERE target_id=? AND platform=?
+    LIMIT 1
+  `).get(targetId, platform);
+  if (posted) return true;
 
+  const status = db.prepare(`
+    SELECT 1 FROM target_status
+    WHERE target_id=? AND platform=? AND last_success_at IS NOT NULL
+    LIMIT 1
+  `).get(targetId, platform);
+  return !!status;
+}
 
 export function recordTargetStatus({ target_id, platform, ok, error_message = null, http_status = null, posted = 0, skipped = 0 }) {
   const now = new Date().toISOString();

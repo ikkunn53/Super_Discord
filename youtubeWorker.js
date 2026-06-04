@@ -1,6 +1,6 @@
 import Parser from 'rss-parser';
 import { getBackfillSinceDate } from './backfillConfig.js';
-import { isPosted, markPosted, getChannelIdsByTargetId, recordTargetStatus } from './db.js';
+import { isPosted, markPosted, getChannelIdsByTargetId, recordTargetStatus, hasTargetPlatformSuccess } from './db.js';
 import { formatNotificationContent } from './notifyFormat.js';
 
 // Uses YouTube RSS (videos.xml). Accepts:
@@ -15,8 +15,8 @@ import { formatNotificationContent } from './notifyFormat.js';
 const parser = new Parser({
   headers: { 'User-Agent': 'notify-bot/1.0 (+rss)' }
 });
-const HTTP_TIMEOUT_MS = Number(process.env.HTTP_TIMEOUT_MS || 15000);
-const FEED_MAX_BYTES = Number(process.env.FEED_MAX_BYTES || 2 * 1024 * 1024);
+const HTTP_TIMEOUT_MS = positiveNumber(process.env.HTTP_TIMEOUT_MS, 15000);
+const FEED_MAX_BYTES = positiveNumber(process.env.FEED_MAX_BYTES, 2 * 1024 * 1024);
 
 // ----------------------
 // Backoff (per target)
@@ -24,6 +24,17 @@ const FEED_MAX_BYTES = Number(process.env.FEED_MAX_BYTES || 2 * 1024 * 1024);
 const backoff = new Map(); // targetId -> { nextAt:number, lastStatus:number, fails:number, skipLogged:boolean, reason:string, detail:string }
 const handleCache = new Map(); // key -> { channelId:string, at:number }
 const HANDLE_CACHE_TTL_MS = 6 * 60 * 60_000; // 6h
+const YOUTUBE_404_CORRELATION_WINDOW_MS = positiveNumber(process.env.YOUTUBE_404_CORRELATION_WINDOW_MS, 20_000);
+const YOUTUBE_404_RECOVERY_LOG_COOLDOWN_MS = positiveNumber(process.env.YOUTUBE_404_RECOVERY_LOG_COOLDOWN_MS, 5 * 60_000);
+const YOUTUBE_SYSTEMIC_404_BACKOFF_MS = positiveNumber(process.env.YOUTUBE_SYSTEMIC_404_BACKOFF_MS, 5 * 60_000);
+
+const pending404Events = new Map(); // channelKey -> { targetId:number, channelKey:string, feedUrl:string, statusText:string, at:number, hasSuccess:boolean, timer:Timeout }
+const systemic404State = { active: false, since: 0, lastRecoveryLoggedAt: 0, channelKeys: new Set(), targetIds: new Set() };
+
+function positiveNumber(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
 
 function nowMs() { return Date.now(); }
 
@@ -45,6 +56,13 @@ function clearBackoff(targetId) {
   backoff.delete(targetId);
 }
 
+function shortenBackoff(targetId, maxWaitMs) {
+  const b = backoff.get(targetId);
+  if (!b) return;
+  const nextAt = Math.min(b.nextAt, nowMs() + maxWaitMs);
+  backoff.set(targetId, { ...b, nextAt, skipLogged: true });
+}
+
 function getBackoff(targetId) {
   const b = backoff.get(targetId);
   if (!b) return null;
@@ -58,6 +76,108 @@ function getBackoff(targetId) {
 function markBackoffSkipLogged(targetId) {
   const b = backoff.get(targetId);
   if (b) b.skipLogged = true;
+}
+
+function youtube404ChannelKey(feedUrl, target) {
+  try {
+    const u = new URL(feedUrl);
+    const channelId = u.searchParams.get('channel_id');
+    if (channelId) return channelId;
+  } catch {}
+  return feedUrl || `target:${target.id}`;
+}
+
+function clearPending404Event(channelKey) {
+  const event = pending404Events.get(channelKey);
+  if (event?.timer) clearTimeout(event.timer);
+  pending404Events.delete(channelKey);
+}
+
+function activeOrPendingSystemic404(targetId) {
+  if (systemic404State.active) return true;
+  for (const event of pending404Events.values()) {
+    if (event.targetId === targetId) return true;
+  }
+  return false;
+}
+
+function describe404Event(event) {
+  return `対象#${event.targetId} channel=${event.channelKey} url=${event.feedUrl}`;
+}
+
+function emitSingleYouTube404(event, logger) {
+  pending404Events.delete(event.channelKey);
+  logger?.error?.(`[YouTube] 対象#${event.targetId} のRSS取得に失敗しました: ${event.statusText} url=${event.feedUrl}`);
+}
+
+function emitSystemicYouTube404(logger) {
+  const events = [...pending404Events.values()].sort((a, b) => a.at - b.at);
+  for (const event of events) {
+    if (event.timer) clearTimeout(event.timer);
+    systemic404State.channelKeys.add(event.channelKey);
+    systemic404State.targetIds.add(event.targetId);
+    shortenBackoff(event.targetId, YOUTUBE_SYSTEMIC_404_BACKOFF_MS);
+  }
+  pending404Events.clear();
+
+  systemic404State.active = true;
+  systemic404State.since = systemic404State.since || nowMs();
+  const successCount = events.filter(e => e.hasSuccess).length;
+  const targets = events.map(describe404Event).join(' / ');
+  const successNote = successCount > 0
+    ? `過去に送信またはRSS取得成功の実績がある対象を${successCount}件含みます。`
+    : '複数のChannel IDで同時に発生しています。';
+  logger?.error?.(`[YouTube] 複数のYouTube RSSで404が発生しました。${successNote}YouTube側の一時的なRSS応答異常の可能性が高いため、RSS取得が復旧するまで個別の404エラー出力を抑制します。対象=${targets}`);
+}
+
+function handleYouTube404ForConsole({ target, feedUrl, statusText, logger }) {
+  const channelKey = youtube404ChannelKey(feedUrl, target);
+  if (systemic404State.active) {
+    systemic404State.channelKeys.add(channelKey);
+    systemic404State.targetIds.add(target.id);
+    shortenBackoff(target.id, YOUTUBE_SYSTEMIC_404_BACKOFF_MS);
+    return;
+  }
+
+  clearPending404Event(channelKey);
+  const event = {
+    targetId: target.id,
+    channelKey,
+    feedUrl,
+    statusText,
+    at: nowMs(),
+    hasSuccess: hasTargetPlatformSuccess(target.id, 'youtube'),
+    timer: null
+  };
+
+  event.timer = setTimeout(() => {
+    if (!systemic404State.active && pending404Events.get(channelKey) === event) emitSingleYouTube404(event, logger);
+  }, YOUTUBE_404_CORRELATION_WINDOW_MS);
+  event.timer.unref?.();
+  pending404Events.set(channelKey, event);
+
+  if (pending404Events.size >= 2) emitSystemicYouTube404(logger);
+}
+
+function noteYouTubeRssRecovered({ target, feedUrl, logger }) {
+  const channelKey = youtube404ChannelKey(feedUrl, target);
+  clearPending404Event(channelKey);
+
+  if (!systemic404State.active) return;
+
+  const elapsed = systemic404State.since ? formatDurationJa(nowMs() - systemic404State.since) : '不明';
+  const shouldLog = nowMs() - systemic404State.lastRecoveryLoggedAt > YOUTUBE_404_RECOVERY_LOG_COOLDOWN_MS;
+  if (shouldLog) {
+    const message = `[YouTube] YouTube RSSの取得が復旧しました（対象#${target.id} / channel=${channelKey} / 継続時間約${elapsed}）。個別の404エラー抑制を解除します。`;
+    if (logger?.success) logger.success(message);
+    else logger?.info?.(message);
+    systemic404State.lastRecoveryLoggedAt = nowMs();
+  }
+
+  systemic404State.active = false;
+  systemic404State.since = 0;
+  systemic404State.channelKeys.clear();
+  systemic404State.targetIds.clear();
 }
 
 // ----------------------
@@ -344,6 +464,9 @@ export async function validateYouTubeInput(value) {
 async function fetchYouTubeFeedForTarget({ target, logger }) {
   const b = getBackoff(target.id);
   if (b) {
+    if (b.lastStatus === 404 && activeOrPendingSystemic404(target.id)) {
+      return null;
+    }
     if (!b.skipLogged) {
       const remaining = formatDurationJa(b.nextAt - nowMs());
       const reason = b.reason ? ` 理由=${b.reason}` : '';
@@ -373,6 +496,7 @@ async function fetchYouTubeFeedForTarget({ target, logger }) {
     logger?.debug?.(`[YouTube] 対象#${target.id} のRSS取得開始: ${feedUrl}`);
     const feed = await parseFeedWithOneRetry(feedUrl);
     clearBackoff(target.id);
+    noteYouTubeRssRecovered({ target, feedUrl, logger });
     const count = Array.isArray(feed.items) ? feed.items.length : 0;
     logger?.debug?.(`[YouTube] 対象#${target.id} のRSS取得成功: item数=${count}`);
     return { feed, feedUrl };
@@ -381,7 +505,11 @@ async function fetchYouTubeFeedForTarget({ target, logger }) {
     const statusText = describeHttpStatus(status || 0);
     setBackoff(target.id, status || 0, { reason: 'YouTube RSSの取得に失敗しました', detail: `url=${feedUrl}` });
     recordTargetStatus({ target_id: target.id, platform: 'youtube', ok: false, error_message: `YouTube RSSの取得に失敗しました: ${statusText}`, http_status: status || 0 });
-    logger?.error?.(`[YouTube] 対象#${target.id} のRSS取得に失敗しました: ${statusText} url=${feedUrl}`);
+    if (status === 404) {
+      handleYouTube404ForConsole({ target, feedUrl, statusText, logger });
+    } else {
+      logger?.error?.(`[YouTube] 対象#${target.id} のRSS取得に失敗しました: ${statusText} url=${feedUrl}`);
+    }
     return null;
   }
 }
