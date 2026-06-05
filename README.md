@@ -378,6 +378,9 @@ NOTIFY_TEMPLATE_TWITCH={url}
 | `BATCH_INTERVAL_MS` | `6000` | 監視サイクル間隔です。単位はミリ秒です。 |
 | `HTTP_TIMEOUT_MS` | `15000` | HTTPリクエストタイムアウトです。単位はミリ秒です。 |
 | `FEED_MAX_BYTES` | `2097152` | RSS取得時の最大サイズです。単位はバイトです。 |
+| `YOUTUBE_404_CORRELATION_WINDOW_MS` | `20000` | 複数のYouTube RSS 404をYouTube側の一時的問題としてまとめる判定時間です。単位はミリ秒です。 |
+| `YOUTUBE_SYSTEMIC_404_BACKOFF_MS` | `300000` | 複数のYouTube RSS 404を検知したときの短縮バックオフ時間です。単位はミリ秒です。 |
+| `YOUTUBE_404_RECOVERY_LOG_COOLDOWN_MS` | `300000` | YouTube RSS復旧ログを連続送信しすぎないための間隔です。単位はミリ秒です。 |
 | `BACKFILL_DAYS` | `2` | `差分投稿して開始` 時に何日前までさかのぼるかを指定します。 |
 | `JOB_TIMEOUT_MS` | `20000` | 各ジョブのタイムアウトです。単位はミリ秒です。 |
 | `JOB_STALE_MS` | `60000` | ジョブをstale判定するまでの時間です。単位はミリ秒です。 |
