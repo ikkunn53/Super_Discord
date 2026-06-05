@@ -91,6 +91,7 @@ async function sendTwitchNotificationToChannels({ client, targetId, url, stream,
   const channelIds = getChannelIdsByTargetId(targetId);
   const title = stream.title?.toString().trim();
   const embeds = [buildTwitchStreamEmbed({ stream, title, url, user })];
+  const components = buildTwitchStreamComponents(url);
 
   for (const chId of channelIds) {
     const ch = await client.channels.fetch(chId).catch(() => null);
@@ -98,6 +99,17 @@ async function sendTwitchNotificationToChannels({ client, targetId, url, stream,
     const content = formatNotificationContent('twitch', { url, title, targetId, login: stream.user_login || '' });
     await ch.send({ content, embeds, components, allowedMentions: { parse: [] } });
   }
+}
+
+function buildTwitchStreamComponents(url) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setLabel('Twitchで見る')
+        .setStyle(ButtonStyle.Link)
+        .setURL(url)
+    )
+  ];
 }
 
 function buildTwitchStreamEmbed({ stream, title, url, user }) {
